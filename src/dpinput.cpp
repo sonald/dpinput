@@ -13,16 +13,23 @@
 #include <fcitx/context.h>
 
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
+#include <array>
 #include <unordered_map>
 #include <unordered_set>
 using namespace std;
+
+struct PinyinBase {
+    unordered_set<string> all;
+};
 
 typedef struct _FcitxDPState {
     pinyin_context_t *py_ctx;
     pinyin_instance_t *py_inst;
     FcitxInstance *owner;
+    PinyinBase *py;
 } FcitxDPState;
 
 static void* DPCreate(struct _FcitxInstance* instance);
@@ -62,9 +69,27 @@ void* DPCreate(struct _FcitxInstance* instance)
     dpstate->py_ctx = pinyin_init("/usr/lib/x86_64-linux-gnu/libpinyin/data",
             "/home/sonald/.config/pinyin");
 
-    pinyin_option_t options = PINYIN_INCOMPLETE | PINYIN_CORRECT_ALL | DYNAMIC_ADJUST;
+    pinyin_option_t options = PINYIN_INCOMPLETE | PINYIN_CORRECT_ALL | 
+        USE_DIVIDED_TABLE | USE_RESPLIT_TABLE |
+        DYNAMIC_ADJUST;
     pinyin_set_options(dpstate->py_ctx, options);
     dpstate->py_inst = pinyin_alloc_instance(dpstate->py_ctx);
+
+    // load pinyin table
+    dpstate->py = new PinyinBase;
+
+    char *pkgdatadir = fcitx_utils_get_fcitx_path("pkgdatadir");
+    string file(pkgdatadir);
+    file += "/dpinput/pinyin.txt";
+
+    cerr << file << endl;
+    if (ifstream py_fs{file, std::ios::in}) {
+        for (std::array<char, 10> a; py_fs.getline(&a[0], 10);) {
+            dpstate->py->all.emplace(a.data());
+        }
+    }
+
+    free(pkgdatadir);
 
     return dpstate;
 }
@@ -73,9 +98,11 @@ boolean DPInit(void *arg)
 {
     FcitxDPState* dpstate = (FcitxDPState*) arg;
     FcitxInstanceSetContext(dpstate->owner, CONTEXT_IM_KEYBOARD_LAYOUT, "us");
+
     return true;
 }
 
+static bool dp_choose = false;
 INPUT_RETURN_VALUE DoDPInput(void* arg, FcitxKeySym sym, unsigned int state)
 {
     FcitxDPState* dpstate = (FcitxDPState*) arg;
@@ -83,33 +110,73 @@ INPUT_RETURN_VALUE DoDPInput(void* arg, FcitxKeySym sym, unsigned int state)
     char* strCodeInput = FcitxInputStateGetRawInputBuffer(input);
     INPUT_RETURN_VALUE retVal;
 
-
     retVal = IRV_TO_PROCESS;
     if (FcitxHotkeyIsHotKeyDigit(sym, state)) {
-        switch (sym) {
-            case FcitxKey_0:
-                break;
+        if (dp_choose) {
+            switch (sym) {
+                case FcitxKey_0:
+                    dp_choose = !dp_choose;
+                    break;
+                case FcitxKey_8: /* turn up page */
+                {
+                    cerr << "turn up page" << endl;
+                    FcitxCandidateWordList *cand_list = FcitxInputStateGetCandidateList(input);
+                    if (FcitxCandidateWordHasPrev(cand_list)) {
+                        FcitxCandidateWordGoPrevPage(cand_list);
+                    }
+                    retVal = IRV_FLAG_UPDATE_INPUT_WINDOW;
+                    break;
+                }
+                case FcitxKey_9: /* turn down page */
+                {
+                    cerr << "turn down page" << endl;
+                    FcitxCandidateWordList *cand_list = FcitxInputStateGetCandidateList(input);
+                    if (FcitxCandidateWordHasNext(cand_list)) {
+                        FcitxCandidateWordGoNextPage(cand_list);
+                    }
+                    retVal = IRV_FLAG_UPDATE_INPUT_WINDOW;
+                    break;
+                }
 
-            case FcitxKey_1: {
-                int size = FcitxInputStateGetRawInputBufferSize(input);
-                FcitxInputStateSetRawInputBufferSize(input, size - 1);
-                strCodeInput[FcitxInputStateGetRawInputBufferSize(input)] = '\0';
+                default: /* 1-7 */
+                {
+                    cerr << "choose by index: " << sym - 0x30 << endl;
+                    FcitxCandidateWordList *cand_list = FcitxInputStateGetCandidateList(input);
+                    FcitxCandidateWordChooseByIndex(cand_list, sym - 0x30 - 1);
+                    retVal = IRV_COMMIT_STRING;
+                    break;
+                }
+            }
 
-                if (!FcitxInputStateGetRawInputBufferSize(input))
-                    retVal = IRV_CLEAN;
-                else
+        } else {
+            switch (sym) {
+                case FcitxKey_0:
+                    dp_choose = !dp_choose;
+                    break;
+
+                case FcitxKey_1: {
+                    int size = FcitxInputStateGetRawInputBufferSize(input);
+                    if (size) {
+                        FcitxInputStateSetRawInputBufferSize(input, size - 1);
+                        strCodeInput[FcitxInputStateGetRawInputBufferSize(input)] = '\0';
+                    }
+
+                    if (!FcitxInputStateGetRawInputBufferSize(input))
+                        retVal = IRV_CLEAN;
+                    else
+                        retVal = IRV_DISPLAY_CANDWORDS;
+                    break;
+                 }
+
+                default: /* 2 - 9 */
+                    strCodeInput[FcitxInputStateGetRawInputBufferSize(input)] = sym;
+                    strCodeInput[FcitxInputStateGetRawInputBufferSize(input) + 1] = '\0';
+                    FcitxInputStateSetRawInputBufferSize(input, FcitxInputStateGetRawInputBufferSize(input) + 1);
+                    /*FcitxMessages* msgs = FcitxInputStateGetPreedit(input);*/
                     retVal = IRV_DISPLAY_CANDWORDS;
-                break;
-             }
 
-            default: /* 2 - 9 */
-                strCodeInput[FcitxInputStateGetRawInputBufferSize(input)] = sym;
-                strCodeInput[FcitxInputStateGetRawInputBufferSize(input) + 1] = '\0';
-                FcitxInputStateSetRawInputBufferSize(input, FcitxInputStateGetRawInputBufferSize(input) + 1);
-                /*FcitxMessages* msgs = FcitxInputStateGetPreedit(input);*/
-                retVal = IRV_DISPLAY_CANDWORDS;
-
-                break;
+                    break;
+            }
         }
     } else 
         retVal = IRV_TO_PROCESS;
@@ -127,12 +194,35 @@ INPUT_RETURN_VALUE DPGetCandWord(void *arg, FcitxCandidateWord* candWord)
 }
 
 class Digits2Pinyin {
+    const unordered_set<string> consonants {
+        "b", "p", "m", "f", "d", "t", "l", "n",
+        "g", "k", "h", "j", "q", "x",
+        "r", "z", "c", "s",
+        "zh", "ch", "sh"
+    };
+
+    const unordered_set<string> finals {
+        "a", "o", "e", "ai", "ei", "ao", "ou", "an", "ang", "en", "eng", "ong",
+            "ua", "uo", "uai", "ui", "uan", "uang", "un", "ueng",
+            "i", "ia", "ie", "iao", "iu", "ian", "iang", "in", "ing", "iong",
+            "ve", "van", "vn"
+
+    };
+
+    const unordered_set<string> specials {
+        "wu", "wa", "wo", "wai", "wei", "wen", "wang", "wan", "weng", 
+            "yi", "ya", "ye", "yao", "yu", "yan", "yang", "yin", "ying", "yong",
+            "yu", "yue", "yuan", "yun"
+    };
+
     public:
-        vector<string> possiblePinyins(string digits) {
+        vector<string> possiblePinyins(PinyinBase* db, string digits) {
             vector<string> res;
             auto vs = letterCombinations(digits);
             for (const auto& s: vs) {
-                if (isPossbilePinyin(s)) {
+                if (isJianpin(s)) {
+                    res.push_back(s);
+                } else if (db->all.find(s) != db->all.end()) {
                     res.push_back(s);
                 }
             }
@@ -141,28 +231,24 @@ class Digits2Pinyin {
         }
 
     private:
+        //可能是简拼
+        bool isJianpin(const string& s) {
+            string vowels = "aeiou"; 
+            for (auto c: s) {
+                if (vowels.find(c) != string::npos)
+                    return false;
+            }
+
+            cerr << s << " may be jianpin" << endl;
+            return true;
+        }
+
+        bool isPinyinSequence(const string& s) {
+            return false;
+        }
+
+        //useless
         bool isPossbilePinyin(const string& s) {
-            static unordered_set<string> consonants = {
-                 "b", "p", "m", "f", "d", "t", "l", "n",
-                 "g", "k", "h", "j", "q", "x",
-                 "r", "z", "c", "s",
-                 "zh", "ch", "sh"
-            };
-
-            static unordered_set<string> finals = {
-                "a", "o", "e", "ai", "ei", "ao", "ou", "an", "ang", "en", "eng", "ong",
-                "ua", "uo", "uai", "ui", "uan", "uang", "un", "ueng",
-                "ia", "ie", "iao", "iu", "ian", "iang", "in", "ing", "iong",
-                "ve", "van", "vn"
-
-            };
-
-            static unordered_set<string> specials = {
-                "wu", "wa", "wo", "wai", "wei", "wen", "wang", "wan", "weng", 
-                "yi", "ya", "ye", "yao", "yu", "yan", "yang", "yin", "ying", "yong",
-                "yu", "yue", "yuan", "yun"
-            };
-
             if (specials.find(s) != specials.end()) 
                 return true;
 
@@ -259,7 +345,7 @@ static vector<string> DPConvertDigitsToPinyin(FcitxDPState *dpstate)
     }
     
     string s(raw_buf);
-    auto res = Digits2Pinyin().possiblePinyins(s);
+    auto res = Digits2Pinyin().possiblePinyins(dpstate->py, s);
     cerr << res << endl;
 
     return res;
@@ -280,13 +366,15 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
     auto pys = DPConvertDigitsToPinyin(dpstate);
     for (const auto& s: pys) {
         auto len = pinyin_parse_more_full_pinyins(dpstate->py_inst, s.c_str());
-        pinyin_guess_candidates(dpstate->py_inst, 0);
+        //pinyin_guess_candidates(dpstate->py_inst, 0);
+        pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0);
 
         guint num = 0;
         pinyin_get_n_candidate(dpstate->py_inst, &num);
         cerr << num << "cands for " << s << endl;
 
-        for (int i = 0; i < MIN(num, 5); i++) {
+        //TODO: sort candidates?
+        for (int i = 0; i < MIN(num, 15); i++) {
             lookup_candidate_t * candidate = NULL;
             pinyin_get_candidate(dpstate->py_inst, i, &candidate);
 
@@ -298,9 +386,9 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
         }
     }
 
-    auto num = MIN(cands.size(), 20);
+    auto num = MIN(cands.size(), 49);
     FcitxCandidateWordList *cand_list = FcitxInputStateGetCandidateList(input);
-    FcitxCandidateWordSetPageSize(cand_list, num);
+    FcitxCandidateWordSetPageSize(cand_list, 7);
     FcitxCandidateWordSetChoose(cand_list, DIGIT_STR_CHOOSE);
     for (int i = 0; i < num; ++i) {
         cerr << cands[i] << " ";

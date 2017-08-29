@@ -13,3 +13,6 @@ fcitx_add_addon_full(dpinput
     SOURCES ${FCITX_DPINPUT_SOURCES}
     IM_CONFIG dpinput.conf
     LINK_LIBS ${LIBPINYIN_LIBRARIES})
+
+install(FILES pinyin.txt DESTINATION /usr/share/fcitx/dpinput/)
+
