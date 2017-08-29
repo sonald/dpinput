@@ -19,6 +19,7 @@
 #include <array>
 #include <unordered_map>
 #include <unordered_set>
+#include <regex>
 using namespace std;
 
 struct PinyinBase {
@@ -193,6 +194,19 @@ INPUT_RETURN_VALUE DPGetCandWord(void *arg, FcitxCandidateWord* candWord)
     return IRV_COMMIT_STRING;
 }
 
+enum PinyinResultType {
+    JianPin,
+    Single, // single hanzi
+    Multi, // maybe many hanzi
+};
+
+struct PinyinResult {
+    string py;
+    PinyinResultType type;
+
+    PinyinResult(string s, PinyinResultType ty): py{s}, type{ty} {}
+};
+
 class Digits2Pinyin {
     const unordered_set<string> consonants {
         "b", "p", "m", "f", "d", "t", "l", "n",
@@ -210,21 +224,24 @@ class Digits2Pinyin {
     };
 
     const unordered_set<string> specials {
+        "a", "o", "e", "ai", "ei", "ao", "ou", "an", "ang", "en", "eng", "ong",
         "wu", "wa", "wo", "wai", "wei", "wen", "wang", "wan", "weng", 
             "yi", "ya", "ye", "yao", "yu", "yan", "yang", "yin", "ying", "yong",
             "yu", "yue", "yuan", "yun"
     };
 
     public:
-        vector<string> possiblePinyins(PinyinBase* db, string digits) {
-            vector<string> res;
+        vector<PinyinResult> possiblePinyins(PinyinBase* db, string digits) {
+            vector<PinyinResult> res;
             auto vs = letterCombinations(digits);
             for (const auto& s: vs) {
                 if (isJianpin(s)) {
-                    res.push_back(s);
+                    res.emplace_back(s, PinyinResultType::JianPin);
                 } else if (db->all.find(s) != db->all.end()) {
-                    res.push_back(s);
-                }
+                    res.emplace_back(s, PinyinResultType::Single);
+                } else if (isPinyinSequence(s)) {
+                    res.emplace_back(s, PinyinResultType::Multi);
+                } 
             }
 
             return res;
@@ -233,6 +250,8 @@ class Digits2Pinyin {
     private:
         //可能是简拼
         bool isJianpin(const string& s) {
+            return false; // disabled
+
             string vowels = "aeiou"; 
             for (auto c: s) {
                 if (vowels.find(c) != string::npos)
@@ -244,7 +263,17 @@ class Digits2Pinyin {
         }
 
         bool isPinyinSequence(const string& s) {
-            return false;
+            regex r("[^aoeiuv]?h?[iuv]?(ai|ei|ao|ou|er|ang?|eng?|ong|a|o|e|i|u|ng|n)?");
+            std::smatch m;
+
+            string ss(s);
+            while (ss.size() && regex_search(ss, m, r)) {
+                if (m.str().size() <= 1) 
+                    return false;
+                //cerr << "matched: " << m.str() << endl;
+                ss = m.suffix();
+            }
+            return ss.size() == 0;
         }
 
         //useless
@@ -336,21 +365,6 @@ static ostream& operator<<(ostream& os, const vector<string>& v)
     return os << "]";
 }
 
-static vector<string> DPConvertDigitsToPinyin(FcitxDPState *dpstate)
-{
-    FcitxInputState *input = FcitxInstanceGetInputState(dpstate->owner);
-    char *raw_buf = FcitxInputStateGetRawInputBuffer(input);
-    if (!raw_buf) {
-        return {};
-    }
-    
-    string s(raw_buf);
-    auto res = Digits2Pinyin().possiblePinyins(dpstate->py, s);
-    cerr << res << endl;
-
-    return res;
-}
-
 INPUT_RETURN_VALUE DPGetCandWords(void *arg)
 {
     fprintf(stderr, "%s\n", __func__);
@@ -361,20 +375,48 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
         return IRV_TO_PROCESS;
     }
 
-    vector<string> cands;
+    vector<string> cands[3];
 
-    auto pys = DPConvertDigitsToPinyin(dpstate);
+    auto pys = Digits2Pinyin().possiblePinyins(dpstate->py, raw_buf);
+
     for (const auto& s: pys) {
-        auto len = pinyin_parse_more_full_pinyins(dpstate->py_inst, s.c_str());
-        //pinyin_guess_candidates(dpstate->py_inst, 0);
-        pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0);
+        auto len = pinyin_parse_more_full_pinyins(dpstate->py_inst, s.py.c_str());
+        if (!len) continue;
+
+        guint take = 0;
+        int idx = 0;
+        switch (s.type) {
+            case PinyinResultType::JianPin:
+                if (!pinyin_guess_sentence_with_prefix(dpstate->py_inst, "")) 
+                    continue;
+                take = 2;
+                idx = 1;
+                break;
+
+            case PinyinResultType::Single:
+                if (!pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0))
+                    continue;
+                take = 9;
+                idx = 0;
+                break;
+
+            case PinyinResultType::Multi:
+                if (!pinyin_guess_sentence_with_prefix(dpstate->py_inst, "")) 
+                    continue;
+                if (!pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0))
+                    continue;
+                take = 15;
+                idx = 2;
+                break;
+        }
+
 
         guint num = 0;
         pinyin_get_n_candidate(dpstate->py_inst, &num);
-        cerr << num << "cands for " << s << endl;
+        cerr << num << " cands for " << s.py << ", type " << s.type << ", take " << take << endl;
 
         //TODO: sort candidates?
-        for (int i = 0; i < MIN(num, 15); i++) {
+        for (int i = 0; i < MIN(num, take); i++) {
             lookup_candidate_t * candidate = NULL;
             pinyin_get_candidate(dpstate->py_inst, i, &candidate);
 
@@ -382,24 +424,27 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
             pinyin_get_candidate_string(dpstate->py_inst, candidate, &word);
 
             //fprintf(stderr, "%s  ", word);
-            cands.push_back(word);
+            cands[idx].push_back(word);
         }
     }
 
-    auto num = MIN(cands.size(), 49);
+    auto num = 100;
     FcitxCandidateWordList *cand_list = FcitxInputStateGetCandidateList(input);
     FcitxCandidateWordSetPageSize(cand_list, 7);
     FcitxCandidateWordSetChoose(cand_list, DIGIT_STR_CHOOSE);
-    for (int i = 0; i < num; ++i) {
-        cerr << cands[i] << " ";
-        FcitxCandidateWord candWord;
-        candWord.callback = DPGetCandWord;
-        candWord.owner = dpstate;
-        candWord.priv = NULL;
-        candWord.strExtra = NULL;
-        candWord.strWord = strdup(cands[i].c_str());
-        candWord.wordType = MSG_OTHER;
-        FcitxCandidateWordAppend(cand_list, &candWord);
+    for (int idx = 0; num && idx < 3; idx++) {
+        for (int i = 0; num && i < cands[idx].size(); ++i) {
+            num--;
+            cerr << cands[idx][i] << " ";
+            FcitxCandidateWord candWord;
+            candWord.callback = DPGetCandWord;
+            candWord.owner = dpstate;
+            candWord.priv = NULL;
+            candWord.strExtra = NULL;
+            candWord.strWord = strdup(cands[idx][i].c_str());
+            candWord.wordType = MSG_OTHER;
+            FcitxCandidateWordAppend(cand_list, &candWord);
+        }
     }
 
     FcitxInputStateSetCursorPos(input, FcitxInputStateGetRawInputBufferSize(input));
