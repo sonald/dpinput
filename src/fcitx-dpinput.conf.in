@@ -1,0 +1,9 @@
+[Addon]
+Name=fcitx-dpinput
+_GeneralName=Dpinput
+_Comment=Digital Pad Pinyin Input Method for Fcitx
+Category=InputMethod
+Enabled=True
+Library=fcitx-dpinput.so
+Type=SharedLibrary
+IMRegisterMethod=ConfigFile

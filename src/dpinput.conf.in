@@ -1,0 +1,7 @@
+[InputMethod]
+UniqueName=dpinput
+_Name=Dpinput
+IconName=dpinput
+Priority=8
+LangCode=zh_CN
+Parent=fcitx-dpinput
