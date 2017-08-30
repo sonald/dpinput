@@ -7,12 +7,12 @@ include_directories (
     ${FCITX4_FCITX_INCLUDE_DIRS}
     )
 
-set(FCITX_DPINPUT_SOURCES dpinput.cpp)
+set(FCITX_DPINPUT_SOURCES dpinput.cpp trie.cc)
 
 fcitx_add_addon_full(dpinput
     SOURCES ${FCITX_DPINPUT_SOURCES}
     IM_CONFIG dpinput.conf
     LINK_LIBS ${LIBPINYIN_LIBRARIES})
 
-install(FILES pinyin.txt DESTINATION /usr/share/fcitx/dpinput/)
+install(FILES pinyin.txt jianpin.txt DESTINATION /usr/share/fcitx/dpinput/)
 

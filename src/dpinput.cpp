@@ -1,4 +1,5 @@
 #include "config.h"
+#include "trie.h"
 
 #include <pinyin.h>
 
@@ -24,6 +25,7 @@ using namespace std;
 
 struct PinyinBase {
     unordered_set<string> all;
+    Trie jp_all; //prefix tree for all supported jianpin
 };
 
 typedef struct _FcitxDPState {
@@ -80,13 +82,27 @@ void* DPCreate(struct _FcitxInstance* instance)
     dpstate->py = new PinyinBase;
 
     char *pkgdatadir = fcitx_utils_get_fcitx_path("pkgdatadir");
-    string file(pkgdatadir);
-    file += "/dpinput/pinyin.txt";
+    {
+        string file(pkgdatadir);
+        file += "/dpinput/pinyin.txt";
 
-    cerr << file << endl;
-    if (ifstream py_fs{file, std::ios::in}) {
-        for (std::array<char, 10> a; py_fs.getline(&a[0], 10);) {
-            dpstate->py->all.emplace(a.data());
+        cerr << file << endl;
+        if (ifstream py_fs{file, std::ios::in}) {
+            for (std::array<char, 10> a; py_fs.getline(&a[0], 10);) {
+                dpstate->py->all.emplace(a.data());
+            }
+        }
+    }
+
+    {
+        string file(pkgdatadir);
+        file += "/dpinput/jianpin.txt";
+
+        cerr << file << endl;
+        if (ifstream py_fs{file, std::ios::in}) {
+            for (std::array<char, 15> a; py_fs.getline(&a[0], 15);) {
+                dpstate->py->jp_all.insert(a.data());
+            }
         }
     }
 
@@ -235,12 +251,14 @@ class Digits2Pinyin {
             vector<PinyinResult> res;
             auto vs = letterCombinations(digits);
             for (const auto& s: vs) {
-                if (isJianpin(s)) {
+                if (isJianpin(db, s)) {
                     res.emplace_back(s, PinyinResultType::JianPin);
                 } else if (db->all.find(s) != db->all.end()) {
                     res.emplace_back(s, PinyinResultType::Single);
-                } else if (isPinyinSequence(s)) {
+                } else {
                     res.emplace_back(s, PinyinResultType::Multi);
+                //} else if (isPinyinSequence(db, s)) {
+                    //res.emplace_back(s, PinyinResultType::Multi);
                 } 
             }
 
@@ -249,25 +267,26 @@ class Digits2Pinyin {
 
     private:
         //可能是简拼
-        bool isJianpin(const string& s) {
-            return false; // disabled
-
-            string vowels = "aeiou"; 
-            for (auto c: s) {
-                if (vowels.find(c) != string::npos)
-                    return false;
+        bool isJianpin(PinyinBase* db, const string& s) {
+            //return false; // disabled
+            
+            if (db->jp_all.search(s)) {
+                cerr << s << " may be jianpin" << endl;
+                return true;
             }
 
-            cerr << s << " may be jianpin" << endl;
-            return true;
+            return false;
         }
 
-        bool isPinyinSequence(const string& s) {
+        bool isPinyinSequence(PinyinBase* db, const string& s) {
             regex r("[^aoeiuv]?h?[iuv]?(ai|ei|ao|ou|er|ang?|eng?|ong|a|o|e|i|u|ng|n)?");
             std::smatch m;
 
             string ss(s);
             while (ss.size() && regex_search(ss, m, r)) {
+                if (db->all.find(m.str()) == db->all.end())
+                    return false;
+
                 if (m.str().size() <= 1) 
                     return false;
                 //cerr << "matched: " << m.str() << endl;
@@ -389,14 +408,19 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
             case PinyinResultType::JianPin:
                 if (!pinyin_guess_sentence_with_prefix(dpstate->py_inst, "")) 
                     continue;
-                take = 2;
+                if (!pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0))
+                    continue;
+                take = 10;
                 idx = 1;
                 break;
 
+            //FIXME: guess full pinyin can disambiguate xi'an with xian
             case PinyinResultType::Single:
-                if (!pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0))
+                //if (!pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0))
+                    //continue;
+                if (!pinyin_guess_candidates(dpstate->py_inst, 0))
                     continue;
-                take = 9;
+                take = 8;
                 idx = 0;
                 break;
 
@@ -405,7 +429,7 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
                     continue;
                 if (!pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0))
                     continue;
-                take = 15;
+                take = 6;
                 idx = 2;
                 break;
         }
@@ -414,6 +438,12 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
         guint num = 0;
         pinyin_get_n_candidate(dpstate->py_inst, &num);
         cerr << num << " cands for " << s.py << ", type " << s.type << ", take " << take << endl;
+        if (num == 0 || 
+            (s.type == PinyinResultType::Single && num > 500) || // too ambiguious to be useful?
+            (s.type == PinyinResultType::Multi && num > 500) // too ambiguious to be useful?
+           ) { 
+            continue; 
+        }
 
         //TODO: sort candidates?
         for (int i = 0; i < MIN(num, take); i++) {
