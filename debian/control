@@ -1,0 +1,13 @@
+Source: fcitx-dpinput
+Section: utils
+Priority: extra
+Maintainer: Deepin Sysdev <sysdev@deepin.com>
+Build-Depends: debhelper, cmake, pkg-config, libpinyin7-dev,
+                fcitx-libs-dev
+Standards-Version: 3.9.2
+Homepage: http://www.deepin.com/
+
+Package: fcitx-dpinput
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: digit pad input method
