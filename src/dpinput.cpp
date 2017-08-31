@@ -24,6 +24,8 @@
 #include <regex>
 using namespace std;
 
+#define PAGE_SIZE 7
+
 struct PinyinBase {
     unordered_set<string> all;
     unordered_multimap<string, string> reversed; // digits -> [pinyin]
@@ -81,21 +83,24 @@ class Digits2Pinyin {
                 auto p = db->reversed.equal_range(digits);
                 for (auto i = p.first; i != p.second; i++) {
                     res.emplace_back(i->second, PinyinResultType::Single);
-                    cerr << "Single: " << i->second << endl;
+                    //cerr << "Single: " << i->second << endl;
                 }
-                return res;
+
+            } else {
+                iterateCombinations(digits, [&res, &db, this](const string& s) {
+                    if (isJianpin(db, s)) {
+                        res.emplace_back(s, PinyinResultType::JianPin);
+                    } else if (db->all.find(s) != db->all.end()) {
+                        res.emplace_back(s, PinyinResultType::Single);
+                    //} else if (isPinyinSequence(db, s)) {
+                        //res.emplace_back(s, PinyinResultType::Multi);
+                    } 
+                });
             }
 
-            iterateCombinations(digits, [&res, &db, this](const string& s) {
-                if (isJianpin(db, s)) {
-                    res.emplace_back(s, PinyinResultType::JianPin);
-                } else if (db->all.find(s) != db->all.end()) {
-                    res.emplace_back(s, PinyinResultType::Single);
-                //} else if (isPinyinSequence(db, s)) {
-                    //res.emplace_back(s, PinyinResultType::Multi);
-                } 
+            std::sort(res.begin(), res.end(), [](const PinyinResult& p1, const PinyinResult& p2) {
+                return p1.py < p2.py;
             });
-
             return res;
         }
 
@@ -452,13 +457,12 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
                 idx = 1;
                 break;
 
-            //FIXME: guess full pinyin can disambiguate xi'an with xian
             case PinyinResultType::Single:
                 if (!pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0))
                     continue;
                 //if (!pinyin_guess_candidates(dpstate->py_inst, 0))
                     //continue;
-                take = 10;
+                take = 21;
                 idx = 0;
                 break;
 
@@ -467,7 +471,7 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
                     continue;
                 if (!pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0))
                     continue;
-                take = 6;
+                take = 10;
                 idx = 2;
                 break;
         }
@@ -485,7 +489,6 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
         }
 #endif
 
-        //TODO: sort candidates?
         for (int i = 0; i < MIN(num, take); i++) {
             lookup_candidate_t * candidate = NULL;
             pinyin_get_candidate(dpstate->py_inst, i, &candidate);
@@ -498,9 +501,9 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
         }
     }
 
-    auto num = 100;
+    auto num = 1000;
     FcitxCandidateWordList *cand_list = FcitxInputStateGetCandidateList(input);
-    FcitxCandidateWordSetPageSize(cand_list, 7);
+    FcitxCandidateWordSetPageSize(cand_list, PAGE_SIZE);
     FcitxCandidateWordSetChoose(cand_list, DIGIT_STR_CHOOSE);
     for (int idx = 0; num && idx < 3; idx++) {
         for (int i = 0; num && i < cands[idx].size(); ++i) {
