@@ -26,6 +26,7 @@ using namespace std;
 
 struct PinyinBase {
     unordered_set<string> all;
+    unordered_multimap<string, string> reversed; // digits -> [pinyin]
     Trie jp_all; //prefix tree for all supported jianpin
 };
 
@@ -36,6 +37,196 @@ typedef struct _FcitxDPState {
     FcitxInstance *owner;
     PinyinBase *py;
 } FcitxDPState;
+
+enum PinyinResultType {
+    JianPin,
+    Single, // single hanzi
+    Multi, // maybe many hanzi
+};
+
+struct PinyinResult {
+    string py;
+    PinyinResultType type;
+
+    PinyinResult(string s, PinyinResultType ty): py{s}, type{ty} {}
+};
+
+class Digits2Pinyin {
+    const unordered_set<string> consonants {
+        "b", "p", "m", "f", "d", "t", "l", "n",
+        "g", "k", "h", "j", "q", "x",
+        "r", "z", "c", "s",
+        "zh", "ch", "sh"
+    };
+
+    const unordered_set<string> finals {
+        "a", "o", "e", "ai", "ei", "ao", "ou", "an", "ang", "en", "eng", "ong",
+            "ua", "uo", "uai", "ui", "uan", "uang", "un", "ueng",
+            "i", "ia", "ie", "iao", "iu", "ian", "iang", "in", "ing", "iong",
+            "ve", "van", "vn"
+
+    };
+
+    const unordered_set<string> specials {
+        "a", "o", "e", "ao", "an",
+        "wu", "wa", "wo", "wai", "wei", "wen", "wang", "wan", "weng", 
+            "yi", "ya", "ye", "yao", "yu", "yan", "yang", "yin", "ying", "yong",
+            "yu", "yue", "yuan", "yun"
+    };
+
+    public:
+        vector<PinyinResult> possiblePinyins(PinyinBase* db, string digits) {
+            vector<PinyinResult> res;
+            if (db->reversed.find(digits) != db->reversed.end()) {
+                auto p = db->reversed.equal_range(digits);
+                for (auto i = p.first; i != p.second; i++) {
+                    res.emplace_back(i->second, PinyinResultType::Single);
+                    cerr << "Single: " << i->second << endl;
+                }
+                return res;
+            }
+
+            iterateCombinations(digits, [&res, &db, this](const string& s) {
+                if (isJianpin(db, s)) {
+                    res.emplace_back(s, PinyinResultType::JianPin);
+                } else if (db->all.find(s) != db->all.end()) {
+                    res.emplace_back(s, PinyinResultType::Single);
+                //} else if (isPinyinSequence(db, s)) {
+                    //res.emplace_back(s, PinyinResultType::Multi);
+                } 
+            });
+
+            return res;
+        }
+
+        // count maximum of possible consonants
+        static size_t consonantCount(const string& s) {
+            size_t n = 0;
+            for (auto c: s) {
+                switch (c) {
+                    case 'b': case 'p': case 'm': case 'f':
+                    case 'd': case 't': case 'l': case 'n':
+                    case 'g': case 'k': case 'h': case 'j':
+                    case 'q': case 'x': case 'r': case 'z':
+                    case 'c': case 's':
+                        n++;
+                        break;
+                    default:
+                        break;
+                }
+            }
+            return n;
+        }
+
+        static string pinyin2digits(string py) {
+            static unordered_map<char, char> m {
+                {'a', '2'}, {'b', '2'}, {'c', '2'},
+                {'d', '3'}, {'e', '3'}, {'f', '3'},
+                {'g', '4'}, {'h', '4'}, {'i', '4'},
+                {'j', '5'}, {'k', '5'}, {'l', '5'},
+                {'m', '6'}, {'n', '6'}, {'o', '6'},
+                {'p', '7'}, {'q', '7'}, {'r', '7'}, {'s', '7'},
+                {'t', '8'}, {'u', '8'}, {'v', '8'},
+                {'w', '9'}, {'x', '9'}, {'y', '9'}, {'z', '9'},
+            };
+
+            string digits;
+            for (auto c: py) {
+                digits.push_back(m[c]);
+            }
+
+            return digits;
+        }
+
+    private:
+        //可能是简拼
+        bool isJianpin(PinyinBase* db, const string& s) {
+            if (db->jp_all.search(s)) {
+                //cerr << s << " may be jianpin" << endl;
+                return true;
+            }
+
+            return false;
+        }
+
+        bool isPinyinSequence(PinyinBase* db, const string& s) {
+            regex r("[^aoeiuv]?h?[iuv]?(ai|ei|ao|ou|er|ang?|eng?|ong|a|o|e|i|u|ng|n)?");
+            std::smatch m;
+
+            string ss(s);
+            while (ss.size() && regex_search(ss, m, r)) {
+                if (db->all.find(m.str()) == db->all.end())
+                    return false;
+
+                if (m.str().size() <= 1) 
+                    return false;
+                //cerr << "matched: " << m.str() << endl;
+                ss = m.suffix();
+            }
+            return ss.size() == 0;
+        }
+
+        string res;
+        template<class UnaryFunction>
+        void iterateCombinations(string digits, UnaryFunction onGet) {
+            static unordered_map<char, string> m {
+                {'1', ""},
+                    {'2', "abc"},
+                    {'3', "def"},
+                    {'4', "ghi"},
+                    {'5', "jkl"},
+                    {'6', "mno"},
+                    {'7', "pqrs"},
+                    {'8', "tuv"},
+                    {'9', "wxyz"},
+                    {'0', ""}
+            };
+
+            res.resize(digits.size(), '\0');
+            iterate(digits, 0, m, onGet);
+        }
+
+        template<class UnaryFunction>
+        void iterate(const string& digits, int i, unordered_map<char, string>& m,
+                UnaryFunction onGet) {
+            if (i == digits.size()) {
+                onGet(res);
+                return;
+            }
+
+            char j = digits[i];
+
+            for (auto c: m[j]) {
+                res[i] = c;
+                if (i == 0) {
+                    switch (c) {
+                        case 'b': case 'p': case 'm': case 'f':
+                        case 'd': case 't': case 'l': case 'n':
+                        case 'g': case 'k': case 'h': case 'j':
+                        case 'q': case 'x': case 'r': case 'z':
+                        case 'c': case 's':
+                            break;
+                        default:
+                            if (specials.find(res.substr(0, 1)) == specials.end())
+                                continue;
+                    }
+                }
+                iterate(digits, i+1, m, onGet);
+            }
+        }
+
+};
+
+static ostream& operator<<(ostream& os, const vector<string>& v)
+{
+    os << "[";
+    for (const auto&s: v) {
+        os << s << ",";
+    }
+
+    return os << "]";
+}
+
 
 static void* DPCreate(struct _FcitxInstance* instance);
 INPUT_RETURN_VALUE DoDPInput(void* arg, FcitxKeySym sym, unsigned int state);
@@ -86,6 +277,19 @@ void* DPCreate(struct _FcitxInstance* instance)
 
     char *pkgdatadir = fcitx_utils_get_fcitx_path("pkgdatadir");
     {
+        static unordered_map<char, string> m {
+            {'1', ""},
+                {'2', "abc"},
+                {'3', "def"},
+                {'4', "ghi"},
+                {'5', "jkl"},
+                {'6', "mno"},
+                {'7', "pqrs"},
+                {'8', "tuv"},
+                {'9', "wxyz"},
+                {'0', ""}
+        };
+
         string file(pkgdatadir);
         file += "/dpinput/pinyin.txt";
 
@@ -93,6 +297,8 @@ void* DPCreate(struct _FcitxInstance* instance)
         if (ifstream py_fs{file, std::ios::in}) {
             for (std::array<char, 10> a; py_fs.getline(&a[0], 10);) {
                 dpstate->py->all.emplace(a.data());
+                dpstate->py->reversed.insert({Digits2Pinyin::pinyin2digits(a.data()), a.data()});
+                //cerr << a.data() << Digits2Pinyin::pinyin2digits(a.data()) << endl;
             }
         }
     }
@@ -190,11 +396,13 @@ INPUT_RETURN_VALUE DoDPInput(void* arg, FcitxKeySym sym, unsigned int state)
                  }
 
                 default: /* 2 - 9 */
-                    strCodeInput[FcitxInputStateGetRawInputBufferSize(input)] = sym;
-                    strCodeInput[FcitxInputStateGetRawInputBufferSize(input) + 1] = '\0';
-                    FcitxInputStateSetRawInputBufferSize(input, FcitxInputStateGetRawInputBufferSize(input) + 1);
-                    /*FcitxMessages* msgs = FcitxInputStateGetPreedit(input);*/
-                    retVal = IRV_DISPLAY_CANDWORDS;
+                    int size = FcitxInputStateGetRawInputBufferSize(input);
+                    if (size < 12) {
+                        strCodeInput[FcitxInputStateGetRawInputBufferSize(input)] = sym;
+                        strCodeInput[FcitxInputStateGetRawInputBufferSize(input) + 1] = '\0';
+                        FcitxInputStateSetRawInputBufferSize(input, FcitxInputStateGetRawInputBufferSize(input) + 1);
+                        retVal = IRV_DISPLAY_CANDWORDS;
+                    }
 
                     break;
             }
@@ -212,166 +420,6 @@ INPUT_RETURN_VALUE DPGetCandWord(void *arg, FcitxCandidateWord* candWord)
 
     strcpy(FcitxInputStateGetOutputString(input), candWord->strWord);
     return IRV_COMMIT_STRING;
-}
-
-enum PinyinResultType {
-    JianPin,
-    Single, // single hanzi
-    Multi, // maybe many hanzi
-};
-
-struct PinyinResult {
-    string py;
-    PinyinResultType type;
-
-    PinyinResult(string s, PinyinResultType ty): py{s}, type{ty} {}
-};
-
-class Digits2Pinyin {
-    const unordered_set<string> consonants {
-        "b", "p", "m", "f", "d", "t", "l", "n",
-        "g", "k", "h", "j", "q", "x",
-        "r", "z", "c", "s",
-        "zh", "ch", "sh"
-    };
-
-    const unordered_set<string> finals {
-        "a", "o", "e", "ai", "ei", "ao", "ou", "an", "ang", "en", "eng", "ong",
-            "ua", "uo", "uai", "ui", "uan", "uang", "un", "ueng",
-            "i", "ia", "ie", "iao", "iu", "ian", "iang", "in", "ing", "iong",
-            "ve", "van", "vn"
-
-    };
-
-    const unordered_set<string> specials {
-        "a", "o", "e", "ao", "an",
-        "wu", "wa", "wo", "wai", "wei", "wen", "wang", "wan", "weng", 
-            "yi", "ya", "ye", "yao", "yu", "yan", "yang", "yin", "ying", "yong",
-            "yu", "yue", "yuan", "yun"
-    };
-
-    public:
-        vector<PinyinResult> possiblePinyins(PinyinBase* db, string digits) {
-            vector<PinyinResult> res;
-            iterateCombinations(digits, [&res, &db, this](const string& s) {
-                if (isJianpin(db, s)) {
-                    res.emplace_back(s, PinyinResultType::JianPin);
-                } else if (db->all.find(s) != db->all.end()) {
-                    res.emplace_back(s, PinyinResultType::Single);
-                //} else if (isPinyinSequence(db, s)) {
-                    //res.emplace_back(s, PinyinResultType::Multi);
-                } 
-            });
-
-            return res;
-        }
-
-        // count maximum of possible consonants
-        static size_t consonantCount(const string& s) {
-            size_t n = 0;
-            for (auto c: s) {
-                switch (c) {
-                    case 'b': case 'p': case 'm': case 'f':
-                    case 'd': case 't': case 'l': case 'n':
-                    case 'g': case 'k': case 'h': case 'j':
-                    case 'q': case 'x': case 'r': case 'z':
-                    case 'c': case 's':
-                        n++;
-                        break;
-                    default:
-                        break;
-                }
-            }
-            return n;
-        }
-
-    private:
-        //可能是简拼
-        bool isJianpin(PinyinBase* db, const string& s) {
-            if (db->jp_all.search(s)) {
-                //cerr << s << " may be jianpin" << endl;
-                return true;
-            }
-
-            return false;
-        }
-
-        bool isPinyinSequence(PinyinBase* db, const string& s) {
-            regex r("[^aoeiuv]?h?[iuv]?(ai|ei|ao|ou|er|ang?|eng?|ong|a|o|e|i|u|ng|n)?");
-            std::smatch m;
-
-            string ss(s);
-            while (ss.size() && regex_search(ss, m, r)) {
-                if (db->all.find(m.str()) == db->all.end())
-                    return false;
-
-                if (m.str().size() <= 1) 
-                    return false;
-                //cerr << "matched: " << m.str() << endl;
-                ss = m.suffix();
-            }
-            return ss.size() == 0;
-        }
-
-        string res;
-        template<class UnaryFunction>
-        void iterateCombinations(string digits, UnaryFunction onGet) {
-            static unordered_map<char, string> m {
-                {'1', ""},
-                    {'2', "abc"},
-                    {'3', "def"},
-                    {'4', "ghi"},
-                    {'5', "jkl"},
-                    {'6', "mno"},
-                    {'7', "pqrs"},
-                    {'8', "tuv"},
-                    {'9', "wxyz"},
-                    {'0', ""}
-            };
-
-            res.resize(digits.size(), '\0');
-            iterate(digits, 0, m, onGet);
-        }
-
-        template<class UnaryFunction>
-        void iterate(const string& digits, int i, unordered_map<char, string>& m,
-                UnaryFunction onGet) {
-            if (i == digits.size()) {
-                onGet(res);
-                return;
-            }
-
-            char j = digits[i];
-
-            for (auto c: m[j]) {
-                res[i] = c;
-                if (i == 0) {
-                    switch (c) {
-                        case 'b': case 'p': case 'm': case 'f':
-                        case 'd': case 't': case 'l': case 'n':
-                        case 'g': case 'k': case 'h': case 'j':
-                        case 'q': case 'x': case 'r': case 'z':
-                        case 'c': case 's':
-                            break;
-                        default:
-                            if (specials.find(res.substr(0, 1)) == specials.end())
-                                continue;
-                    }
-                }
-                iterate(digits, i+1, m, onGet);
-            }
-        }
-
-};
-
-static ostream& operator<<(ostream& os, const vector<string>& v)
-{
-    os << "[";
-    for (const auto&s: v) {
-        os << s << ",";
-    }
-
-    return os << "]";
 }
 
 INPUT_RETURN_VALUE DPGetCandWords(void *arg)
@@ -406,11 +454,11 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
 
             //FIXME: guess full pinyin can disambiguate xi'an with xian
             case PinyinResultType::Single:
-                //if (!pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0))
-                    //continue;
-                if (!pinyin_guess_candidates(dpstate->py_inst, 0))
+                if (!pinyin_guess_full_pinyin_candidates(dpstate->py_inst, 0))
                     continue;
-                take = 16;
+                //if (!pinyin_guess_candidates(dpstate->py_inst, 0))
+                    //continue;
+                take = 10;
                 idx = 0;
                 break;
 
@@ -428,12 +476,14 @@ INPUT_RETURN_VALUE DPGetCandWords(void *arg)
         guint num = 0;
         pinyin_get_n_candidate(dpstate->py_inst, &num);
         //cerr << num << " cands for " << s.py << ", type " << s.type << ", take " << take << endl;
+#if 0
         if (num == 0 || 
             (s.type == PinyinResultType::Single && num > 500) || // too ambiguious to be useful?
             (s.type == PinyinResultType::Multi && num > 100) // too ambiguious to be useful?
            ) { 
             continue; 
         }
+#endif
 
         //TODO: sort candidates?
         for (int i = 0; i < MIN(num, take); i++) {
