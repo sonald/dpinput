@@ -375,6 +375,10 @@ INPUT_RETURN_VALUE DoDPInput(void* arg, FcitxKeySym sym, unsigned int state)
                     FcitxCandidateWordList *cand_list = FcitxInputStateGetCandidateList(input);
                     FcitxCandidateWordChooseByIndex(cand_list, sym - 0x30 - 1);
                     retVal = IRV_COMMIT_STRING;
+
+                    // auto change state after commit
+                    dpstate->dp_choose = !dpstate->dp_choose;
+                    FcitxLog(INFO, "choose mode: %d", (int)dpstate->dp_choose);
                     break;
                 }
             }
